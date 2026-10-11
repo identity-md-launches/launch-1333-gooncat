@@ -1,0 +1,24 @@
+{
+  "kind": "custom_token",
+  "token": {
+    "contract": "GOONCATToken",
+    "name": "GOONCAT",
+    "symbol": "GOONCAT",
+    "decimals": 18,
+    "constructorArgs": [],
+    "totalSupply": "1000000000000000000000000000"
+  },
+  "contracts": [],
+  "pool": {
+    "pairedCurrency": "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "125270724187523965593206900"
+  },
+  "economics": {
+    "poolBps": 9000,
+    "initialMarketCapWei": "2500000000000000000000",
+    "remainderTo": "0x000000000000000000000000000000000000dead"
+  },
+  "notes": "The entire fixed supply is minted once to the deployer. Transfers from the fixed Ethereum Uniswap v4 PoolManager pay 2% to the fixed treasury; all transfers to the PoolManager and wallet transfers are untaxed. The launch factory handles the external 10% swarm allocation, 90% pool seeding and 1% platform fee. Pool fee is 1.25%. initialPrice is provenance only; the launch derives the opening price from economics and deployed currency order. No owner, admin, further minting or upgradeability."
+}
