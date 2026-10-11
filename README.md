@@ -82,11 +82,32 @@ charge. The manifest pins the IMD pair, pool fee of 12500 (1.25%), tick spacing 
 is copied exactly from the brief; the factory derives the actual opening price using
 deployed currency order. The pool fee is a pool configuration, not a second token tax.
 
+## Launch operations
+
+The launch pipeline selects Ethereum mainnet (chain ID 1) outside `launch.json` and
+deploys `src/GOONCATToken.sol:GOONCATToken` with no constructor arguments. The factory
+receives the whole supply, including when it deploys through CREATE2; the wallet that
+calls the factory receives no constructor allocation. There are no application contracts
+in the manifest and no token initialization or post-deployment settings.
+
+The factory sends 100,000,000 GOONCAT to its Merkle distributor and allocates
+900,000,000 GOONCAT to pool seeding. It forwards any remainder from liquidity rounding
+to the specified `0x000000000000000000000000000000000000dead`. Factory distribution,
+swarm claims and incoming pool settlement each transfer their full requested amount.
+The platform handles pool initialization, opening-price derivation and its external 1%
+protocol fee. The token never calls these external contracts during construction.
+
+Swap integrations must use the net recipient balance when enforcing minimum output:
+a gross payout of 100 GOONCAT credits 98 GOONCAT to an ordinary buyer and 2 GOONCAT to
+the treasury. The treasury receives ERC-20 balances immediately without a withdrawal
+step or callback, and has no administrative privileges over the token.
+
 ## Build and validation
 
 ```sh
 forge build
 forge test
+forge fmt --check
 ```
 
 Solidity is pinned to 0.8.26, targeting Cancun with optimization and `bytecode_hash = "none"`.
@@ -94,13 +115,21 @@ All imported sources are vendored as ordinary files under `lib/`, with upstream 
 and version provenance. No dependency download, RPC URL, environment file, FFI or filesystem
 permission is needed. Build output goes to `out/`, separate from the delivered logo.
 
-Local validation passed: 18 unit/fuzz tests plus one stateful invariant test, including
+Local validation passed: 20 unit/fuzz tests plus one stateful invariant test, including
 1,000 runs for each of two fuzz properties and 256 sequences of 64 invariant calls
 (16,384 calls, zero reverts). Coverage includes full constructor allocation, swarm claims,
 tax-free seeding and sells, gross/net buy accounting, emitted events, fee rounding,
 delegated transfers, allowance rollback, treasury and PoolManager self-transfer cases,
 invalid recipients, unavailable admin entry points, supply conservation and runtime
 checks for forbidden opcodes.
+
+The two additional deterministic smoke tests cover CREATE2 factory allocation and
+failed delegated buys preserving accrued fees and allowance before a successful retry.
+The existing fuzz and invariant suites are preserved. For a quick smoke pass:
+
+```sh
+forge test --match-test 'test_(EntireFixedSupply|Create2Factory|FactoryDistribution|InvalidDelegated)'
+```
 
 The local settlement probe checks the PoolManager's exact incoming and outgoing token
 balance requirements at its specified address. It is not the actual Uniswap AMM.

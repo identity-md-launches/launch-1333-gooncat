@@ -5,6 +5,13 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {GOONCATToken} from "../src/GOONCATToken.sol";
 
+/// @dev Test-only factory exercising the launch's constructor caller through CREATE2.
+contract TokenFactoryProbe {
+    function deploy(bytes32 salt) external returns (GOONCATToken) {
+        return new GOONCATToken{salt: salt}();
+    }
+}
+
 /// @dev Offline model of the balance accounting the PoolManager requires.
 /// This is not an AMM: it checks exact incoming settlement and exact outgoing debits.
 contract SettlementProbe {
@@ -60,6 +67,21 @@ contract GOONCATTokenTest is Test {
         assertEq(token.POOL_MANAGER(), MANAGER);
         assertEq(token.TREASURY(), TREASURY);
         assertEq(token.BUY_TAX_BPS(), 200);
+    }
+
+    function test_Create2FactoryReceivesSupplyInsteadOfLaunchCaller() public {
+        TokenFactoryProbe factory = new TokenFactoryProbe();
+        address launcher = makeAddr("launcher");
+
+        vm.prank(launcher, launcher);
+        GOONCATToken deployed = factory.deploy(keccak256("GOONCAT launch smoke test"));
+
+        assertEq(deployed.totalSupply(), SUPPLY);
+        assertEq(deployed.balanceOf(address(factory)), SUPPLY);
+        assertEq(deployed.balanceOf(launcher), 0);
+        assertEq(deployed.balanceOf(address(this)), 0);
+        assertEq(deployed.balanceOf(MANAGER), 0);
+        assertEq(deployed.balanceOf(TREASURY), 0);
     }
 
     function test_FactoryDistributionClaimSeedBuyAndSell() public {
@@ -257,6 +279,31 @@ contract GOONCATTokenTest is Test {
         token.transfer(address(0), 100e18);
         assertEq(token.balanceOf(TREASURY), 0);
         assertEq(token.balanceOf(MANAGER), 100e18);
+        assertEq(token.totalSupply(), SUPPLY);
+    }
+
+    function test_InvalidDelegatedBuyPreservesAllowanceAndCanBeRetried() public {
+        token.transfer(MANAGER, 200e18);
+        pool.take(buyer, 100e18);
+        vm.prank(MANAGER);
+        token.approve(spender, 100e18);
+
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        vm.prank(spender);
+        token.transferFrom(MANAGER, address(0), 100e18);
+
+        assertEq(token.allowance(MANAGER, spender), 100e18);
+        assertEq(token.balanceOf(MANAGER), 100e18);
+        assertEq(token.balanceOf(buyer), 98e18);
+        assertEq(token.balanceOf(TREASURY), 2e18);
+        assertEq(token.totalSupply(), SUPPLY);
+
+        vm.prank(spender);
+        assertTrue(token.transferFrom(MANAGER, buyer, 100e18));
+        assertEq(token.allowance(MANAGER, spender), 0);
+        assertEq(token.balanceOf(MANAGER), 0);
+        assertEq(token.balanceOf(buyer), 196e18);
+        assertEq(token.balanceOf(TREASURY), 4e18);
         assertEq(token.totalSupply(), SUPPLY);
     }
 
