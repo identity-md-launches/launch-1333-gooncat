@@ -136,7 +136,6 @@ contract GOONCATTokenTest is Test {
         }
     }
 
-    /// forge-config: default.fuzz.runs = 1000
     function testFuzz_BuyThenSellConservesSupplyAndSettlesExactly(uint256 amount) public {
         amount = bound(amount, 0, SUPPLY);
         token.transfer(MANAGER, SUPPLY);
@@ -155,7 +154,6 @@ contract GOONCATTokenTest is Test {
         assertEq(token.balanceOf(TREASURY), fee);
     }
 
-    /// forge-config: default.fuzz.runs = 1000
     function testFuzz_WalletTransferAndSellAreUntaxed(uint256 amount) public {
         amount = bound(amount, 0, SUPPLY);
         token.transfer(buyer, amount);
@@ -307,9 +305,148 @@ contract GOONCATTokenTest is Test {
         assertEq(token.totalSupply(), SUPPLY);
     }
 
+    function testFuzz_DelegatedBuyTaxDependsOnSourceRegardlessOfCaller(address caller, uint256 gross) public {
+        vm.assume(caller != address(0));
+        gross = bound(gross, 0, SUPPLY);
+        token.transfer(MANAGER, SUPPLY);
+        vm.prank(MANAGER);
+        token.approve(caller, gross);
+        vm.prank(caller);
+        assertTrue(token.transferFrom(MANAGER, buyer, gross));
+        assertEq(token.balanceOf(buyer), gross - gross * 2 / 100);
+        assertEq(token.balanceOf(TREASURY), gross * 2 / 100);
+        assertEq(token.balanceOf(MANAGER), SUPPLY - gross);
+        assertEq(token.allowance(MANAGER, caller), 0);
+        assertEq(token.totalSupply(), SUPPLY);
+    }
+
+    function testFuzz_TreasuryBuyerCannotSpendMoreThanGrossPoolBalance(uint256 held, uint256 extra, bool delegated)
+        public
+    {
+        held = bound(held, 0, SUPPLY);
+        extra = bound(extra, 1, type(uint256).max - held);
+        uint256 gross = held + extra;
+        token.transfer(MANAGER, held);
+        token.transfer(TREASURY, SUPPLY - held);
+        if (delegated) {
+            vm.prank(MANAGER);
+            token.approve(spender, gross);
+        }
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, MANAGER, held, gross));
+        if (delegated) {
+            vm.prank(spender);
+            token.transferFrom(MANAGER, TREASURY, gross);
+        } else {
+            vm.prank(MANAGER);
+            token.transfer(TREASURY, gross);
+        }
+        assertEq(token.balanceOf(MANAGER), held);
+        assertEq(token.balanceOf(TREASURY), SUPPLY - held);
+        if (delegated) assertEq(token.allowance(MANAGER, spender), gross);
+        assertEq(token.totalSupply(), SUPPLY);
+    }
+
+    function testFuzz_NetOnlyAllowanceNeverAuthorizesGrossBuy(uint256 gross) public {
+        gross = bound(gross, 50, SUPPLY);
+        uint256 net = gross - gross * 2 / 100;
+        token.transfer(MANAGER, SUPPLY);
+        vm.prank(MANAGER);
+        token.approve(spender, net);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, spender, net, gross));
+        vm.prank(spender);
+        token.transferFrom(MANAGER, buyer, gross);
+        assertEq(token.balanceOf(buyer), 0);
+        assertEq(token.balanceOf(TREASURY), 0);
+        assertEq(token.balanceOf(MANAGER), SUPPLY);
+        assertEq(token.allowance(MANAGER, spender), net);
+    }
+
+    function testFuzz_PartialBuysConsumeGrossAllowanceAndCannotReplay(uint256 first, uint256 second) public {
+        first = bound(first, 0, SUPPLY);
+        second = bound(second, 0, SUPPLY - first);
+        uint256 gross = first + second;
+        token.transfer(MANAGER, SUPPLY);
+        vm.prank(MANAGER);
+        token.approve(spender, gross);
+        vm.startPrank(spender);
+        assertTrue(token.transferFrom(MANAGER, buyer, first));
+        assertEq(token.allowance(MANAGER, spender), second);
+        assertTrue(token.transferFrom(MANAGER, buyer, second));
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, spender, 0, 1));
+        token.transferFrom(MANAGER, buyer, 1);
+        vm.stopPrank();
+        uint256 fee = first * 2 / 100 + second * 2 / 100;
+        assertEq(token.balanceOf(buyer), gross - fee);
+        assertEq(token.balanceOf(TREASURY), fee, "round each buy independently");
+        assertEq(token.balanceOf(MANAGER), SUPPLY - gross);
+        assertEq(token.allowance(MANAGER, spender), 0);
+        assertEq(token.totalSupply(), SUPPLY);
+    }
+
+    function test_FullSupplyBuyThenBuyerAndTreasuryCanSellEverything() public {
+        token.transfer(MANAGER, SUPPLY);
+        pool.take(buyer, SUPPLY);
+        assertEq(token.balanceOf(buyer), 980_000_000e18);
+        assertEq(token.balanceOf(TREASURY), 20_000_000e18);
+        assertEq(token.balanceOf(MANAGER), 0);
+        vm.prank(buyer);
+        assertTrue(token.transfer(MANAGER, 980_000_000e18));
+        vm.prank(TREASURY);
+        assertTrue(token.transfer(MANAGER, 20_000_000e18));
+        assertEq(token.balanceOf(MANAGER), SUPPLY);
+        assertEq(token.balanceOf(buyer), 0);
+        assertEq(token.balanceOf(TREASURY), 0);
+        assertEq(token.totalSupply(), SUPPLY);
+    }
+
+    function test_RevokedPoolApprovalCannotBuyAndReapprovalRestoresIt() public {
+        token.transfer(MANAGER, 200e18);
+        pool.take(buyer, 100e18);
+        vm.startPrank(MANAGER);
+        token.approve(spender, type(uint256).max);
+        token.approve(spender, 0);
+        vm.stopPrank();
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, spender, 0, 100e18));
+        vm.prank(spender);
+        token.transferFrom(MANAGER, buyer, 100e18);
+        assertEq(token.balanceOf(buyer), 98e18);
+        assertEq(token.balanceOf(TREASURY), 2e18);
+        assertEq(token.balanceOf(MANAGER), 100e18);
+        vm.prank(MANAGER);
+        token.approve(spender, 100e18);
+        vm.prank(spender);
+        assertTrue(token.transferFrom(MANAGER, buyer, 100e18));
+        assertEq(token.balanceOf(buyer), 196e18);
+        assertEq(token.balanceOf(TREASURY), 4e18);
+        assertEq(token.balanceOf(MANAGER), 0);
+        assertEq(token.allowance(MANAGER, spender), 0);
+    }
+
+    function test_TreasuryAsApprovedSpenderDoesNotExemptABuy() public {
+        token.transfer(MANAGER, 100e18);
+        vm.prank(MANAGER);
+        token.approve(TREASURY, 100e18);
+        vm.prank(TREASURY);
+        assertTrue(token.transferFrom(MANAGER, buyer, 100e18));
+        assertEq(token.balanceOf(buyer), 98e18);
+        assertEq(token.balanceOf(TREASURY), 2e18);
+        assertEq(token.balanceOf(MANAGER), 0);
+        assertEq(token.allowance(MANAGER, TREASURY), 0);
+    }
+
+    function test_TransferFromZeroCannotReachTheMintPath() public {
+        // The ERC20 base rejects the zero allowance owner before _transfer/_mint.
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidApprover.selector, address(0)));
+        vm.prank(spender);
+        token.transferFrom(address(0), buyer, 0);
+        assertEq(token.balanceOf(buyer), 0);
+        assertEq(token.balanceOf(address(this)), SUPPLY);
+        assertEq(token.totalSupply(), SUPPLY);
+    }
+
     function test_NoAdminMintPauseFreezeOrUpgradeEntryPoints() public {
         token.transfer(buyer, 100e18);
-        bytes[] memory calls = new bytes[](15);
+        bytes[] memory calls = new bytes[](20);
         calls[0] = abi.encodeWithSignature("mint(address,uint256)", buyer, SUPPLY);
         calls[1] = abi.encodeWithSignature("mint(uint256)", SUPPLY);
         calls[2] = abi.encodeWithSignature("mint()");
@@ -325,6 +462,11 @@ contract GOONCATTokenTest is Test {
         calls[12] = abi.encodeWithSignature("upgradeTo(address)", spender);
         calls[13] = abi.encodeWithSignature("initialize(address)", spender);
         calls[14] = abi.encodeWithSignature("seize(address)", buyer);
+        calls[15] = abi.encodeWithSignature("burn(uint256)", 1);
+        calls[16] = abi.encodeWithSignature("setBuyTaxBps(uint256)", 0);
+        calls[17] = abi.encodeWithSignature("setFee(uint256)", 0);
+        calls[18] = abi.encodeWithSignature("setOwner(address)", spender);
+        calls[19] = abi.encodeWithSignature("setMinter(address)", spender);
         for (uint256 i; i < calls.length; ++i) {
             (bool success,) = address(token).call(calls[i]);
             assertFalse(success);
