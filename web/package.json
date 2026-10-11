@@ -1,0 +1,16 @@
+{
+  "name": "gooncat-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tooling for the GOONCAT static site: copies site/ to dist/ and runs offline checks. The site itself has no build step and no runtime dependencies.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node check.mjs",
+    "typecheck": "npx --yes --package typescript@5.6.3 tsc -p tsconfig.json",
+    "preview": "node preview.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
